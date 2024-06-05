@@ -2,6 +2,7 @@ import os
 import zlib
 import magic
 import pytest
+import hashlib
 import subprocess
 
 executable_path = os.path.abspath("./app/git")
@@ -18,18 +19,27 @@ def git_init_folder(tmp_path):
 
 @pytest.fixture
 def git_touch_file(tmp_path):
+    content = "hello world"
     with open(tmp_path / "test.txt", "w") as f:
-        f.write("hello world\n")
+        f.write(content)
+
+    payload = f"blob {len(content)}\0{content}".encode()
+    return content, payload
 
 
 @pytest.fixture
-def git_hash_object(tmp_path, git_touch_file):
-    blob_sha = "3b18e512dba79e4c8300dd08aeb37f8e728b8dad"
-    payload = b"blob 11\0hello world\n"
+def git_hash_object(tmp_path):
+    content = ""
+    with open(tmp_path / "test.txt", "r") as f:
+        content = f.read()
+    payload = f"blob {len(content)}\0{content}".encode()
+    blob_sha = hashlib.sha1(payload).hexdigest()
 
     os.mkdir(tmp_path / f".git/objects/{blob_sha[:2]}")
     with open(tmp_path / f".git/objects/{blob_sha[:2]}/{blob_sha[2:]}", "wb") as f:
         f.write(zlib.compress(payload))
+
+    return blob_sha
 
 
 ################################################################################
@@ -81,7 +91,9 @@ def test_hash_object(tmp_path, git_init_folder, git_touch_file):
     print(process.stdout)
     assert process.returncode == 0
 
-    assert "3b18e512dba79e4c8300dd08aeb37f8e728b8dad" == process.stdout.strip()
+    _, payload = git_touch_file
+    blob_sha = hashlib.sha1(payload).hexdigest()
+    assert blob_sha == process.stdout.strip()
 
 
 def test_encode_blob(tmp_path, git_init_folder, git_touch_file):
@@ -96,14 +108,15 @@ def test_encode_blob(tmp_path, git_init_folder, git_touch_file):
     print(process.stdout)
     assert process.returncode == 0
 
-    blob_sha = "3b18e512dba79e4c8300dd08aeb37f8e728b8dad"
+    _, payload = git_touch_file
+    blob_sha = hashlib.sha1(payload).hexdigest()
     assert (blob := tmp_path / f".git/objects/{blob_sha[:2]}/{blob_sha[2:]}").exists()
     assert "zlib compressed data" == magic.from_file(blob)
 
 
-def test_decode_blob(tmp_path, git_init_folder, git_hash_object):
+def test_decode_blob(tmp_path, git_init_folder, git_touch_file, git_hash_object):
     process = subprocess.run(
-        executable_path + " cat-file -p 3b18e512dba79e4c8300dd08aeb37f8e728b8dad",
+        executable_path + " cat-file -p " + git_hash_object,
         cwd=tmp_path,
         shell=True,
         text=True,
@@ -113,4 +126,5 @@ def test_decode_blob(tmp_path, git_init_folder, git_hash_object):
     print(process.stdout)
     assert process.returncode == 0
 
-    assert "hello world" == process.stdout.strip()
+    content, _ = git_touch_file
+    assert content == process.stdout.strip()
